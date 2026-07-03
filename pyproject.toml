@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-for-geo-agent"
+version = "0.1.0"
+description = "GEO (Generative Engine Optimization) 论文追踪智能体"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["."]
