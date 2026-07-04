@@ -1,9 +1,11 @@
-"""Node 5: 终端输出 + 飞书卡片数据结构预留。"""
+"""Node 5: 终端输出 + 飞书卡片推送。"""
 
+import json
 from src.state import AgentState
 from src.models.paper import DigestedPaper
 from src.config import FILTER_TOP_K
 from src.utils.logger import logger
+from src.utils.feishu import send_card_message
 
 
 def _render_daily_report(state: AgentState) -> str:
@@ -97,6 +99,7 @@ def _build_feishu_card_data(state: AgentState) -> dict:
                 {"is_short": False, "text": {"tag": "lark_md", "content": f"🛠️ {dp.methodology}"}},
                 {"is_short": False, "text": {"tag": "lark_md", "content": f"📈 {dp.experiment_results}"}},
                 {"is_short": False, "text": {"tag": "lark_md", "content": f"🔗 {dp.geo_insight}"}},
+                {"is_short": False, "text": {"tag": "lark_md", "content": f"[📄 查看论文]({p.pdf_url})"}},
             ],
         })
         card["elements"].append({"tag": "hr"})
@@ -122,8 +125,9 @@ def output_result(state: AgentState) -> AgentState:
     print(report)
     logger.info(f"   ✅ 日报生成完成，共 {len(state.get('digested_papers', []))} 篇深度梗概")
 
-    # 预留飞书卡片数据
+    # 发送到飞书群
     feishu_card = _build_feishu_card_data(state)
+    send_card_message(feishu_card)
     logger.info(f"   📋 飞书卡片数据已准备（{len(feishu_card.get('elements', []))} 个元素）")
 
     return state

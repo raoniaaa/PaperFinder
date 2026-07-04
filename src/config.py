@@ -69,6 +69,15 @@ GEO_NEGATIVE_KEYWORDS = [
     "medical imaging",
     "clinical",
     "radiology",
+    "earth observation",
+    "remote sensing",
+    "satellite imagery",
+    "robot navigation",
+    "protein folding",
+    "drug discovery",
+    "genome",
+    "molecular dynamics",
+    "quantum computing",
 ]
 
 # --- 存储配置 ---
@@ -78,6 +87,12 @@ CHROMA_PERSIST_DIR = str(DATA_DIR / "chroma_db")
 
 # --- 定时调度 ---
 SCHEDULE_TIME = os.getenv("SCHEDULE_TIME", "08:00")
+
+# --- 飞书配置 ---
+FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")
+FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
+FEISHU_RECEIVE_ID_TYPE = os.getenv("FEISHU_RECEIVE_ID_TYPE", "open_id")
+FEISHU_RECEIVE_ID = os.getenv("FEISHU_RECEIVE_ID", "")
 
 # --- 日志配置 ---
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

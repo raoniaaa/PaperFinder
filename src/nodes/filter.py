@@ -16,36 +16,33 @@ FILTER_SYSTEM_PROMPT = """你是「生成式引擎优化（Generative Engine Opt
 
 GEO 定义：研究如何优化内容以在 AI 搜索引擎（如 ChatGPT、Perplexity、Google AI Overviews 等）中获得更好的曝光、引用和排名。
 
-高优先级主题（4-5分）：
-- 生成式引擎优化（GEO）、答案引擎优化（AEO）
-- AI 搜索引擎设计、对话式搜索系统
-- LLM 驱动的搜索排序、检索增强生成（RAG）优化
-- 内容在 AI 引擎中的可见性研究
+高优先级关键词（4-5分）：
+{high_kw}
 
-中优先级主题（3分）：
-- LLM 引用可靠性、来源归因
-- 搜索结果偏见与公平性
-- AI 生成答案中的幻觉缓解
-- 结构化数据对 LLM 的影响
-- 信息检索与生成式 AI 的交叉
+中优先级关键词（3分）：
+{med_kw}
 
-低优先级/排除（1-2分）：
-- 纯传统信息检索（不涉及生成式AI）
-- 医疗影像、人脸识别、自动驾驶
-- 纯理论数学推导
-- 与搜索/AI引擎完全无关的通用 NLP/CV
+排除关键词（1-2分，出现以下词汇的论文与GEO无关）：
+{neg_kw}
+
+评分标准：
+- 5分：论文核心直接研究 GEO/AEO 或 AI 搜索引擎的内容优化、排名或可见性
+- 4分：论文与 RAG 优化、LLM 搜索排序、AI 搜索相关，且对 GEO 有明显启发
+- 3分：论文涉及信息检索+生成式AI交叉、引用可靠性、幻觉缓解等，与 GEO 间接相关
+- 2分：论文涉及传统信息检索但完全不涉及生成式 AI 或 LLM
+- 1分：论文与搜索/信息检索/LLM应用均无关（如通用 NLP、CV、机器人等）
 
 请为每篇论文给出：
 1. relevance_score: 1-5 的整数评分
 2. relevance_reason: 一句话说明理由（中文）
 
-严格按照以下 JSON 数组格式输出，不要输出其他内容：
-{
+严格按照以下 JSON 格式输出，不要输出其他内容：
+{{
   "papers": [
-    {"arxiv_id": "论文ID", "relevance_score": 4, "relevance_reason": "理由"},
+    {{"arxiv_id": "论文ID", "relevance_score": 4, "relevance_reason": "理由"}},
     ...
   ]
-}"""
+}}"""
 
 
 def _build_filter_user_message(abstracts_batch: list[tuple[str, str]]) -> str:
@@ -56,6 +53,25 @@ def _build_filter_user_message(abstracts_batch: list[tuple[str, str]]) -> str:
         abstract_short = abstract[:800] if len(abstract) > 800 else abstract
         lines.append(f"---\nID: {arxiv_id}\n标题: {title}\n摘要: {abstract_short}")
     return "\n".join(lines)
+
+
+def _hard_filter_negative(text: str) -> bool:
+    """硬过滤：标题或摘要包含负面关键词的直接排除。"""
+    text_lower = text.lower()
+    for kw in GEO_NEGATIVE_KEYWORDS:
+        if kw.lower() in text_lower:
+            return True
+    return False
+
+
+def _hard_filter_positive(text: str) -> int:
+    """硬校验：计算高优先级关键词命中数，辅助评分校准。"""
+    text_lower = text.lower()
+    hits = 0
+    for kw in GEO_HIGH_PRIORITY_KEYWORDS:
+        if kw.lower() in text_lower:
+            hits += 1
+    return hits
 
 
 def filter_papers(state: AgentState) -> AgentState:
@@ -70,20 +86,39 @@ def filter_papers(state: AgentState) -> AgentState:
         state["stats"] = {**state.get("stats", {}), "filtered_count": 0}
         return state
 
+    # 构造带关键词的 system prompt
+    prompt = FILTER_SYSTEM_PROMPT.format(
+        high_kw=", ".join(GEO_HIGH_PRIORITY_KEYWORDS),
+        med_kw=", ".join(GEO_MEDIUM_PRIORITY_KEYWORDS),
+        neg_kw=", ".join(GEO_NEGATIVE_KEYWORDS),
+    )
+
     total = len(raw_papers)
+    negative_filtered_count = 0
     scored_papers = []
 
     # 分批处理
     for i in range(0, total, FILTER_BATCH_SIZE):
         batch = raw_papers[i : i + FILTER_BATCH_SIZE]
-        batch_data = [(p.arxiv_id, p.title, p.abstract) for p in batch]
 
-        logger.info(f"   处理批次 {i // FILTER_BATCH_SIZE + 1}, 共 {len(batch)} 篇...")
+        # 第一层：负面关键词硬过滤
+        filtered_batch = []
+        for p in batch:
+            if _hard_filter_negative(f"{p.title} {p.abstract}"):
+                negative_filtered_count += 1
+                continue
+            filtered_batch.append(p)
+
+        if not filtered_batch:
+            continue
+
+        batch_data = [(p.arxiv_id, p.title, p.abstract) for p in filtered_batch]
+        logger.info(f"   处理批次 {i // FILTER_BATCH_SIZE + 1}, 共 {len(filtered_batch)} 篇（已过滤 {len(batch) - len(filtered_batch)} 篇）...")
 
         try:
             user_msg = _build_filter_user_message(batch_data)
             result = llm.chat_json(
-                system_prompt=FILTER_SYSTEM_PROMPT,
+                system_prompt=prompt,
                 user_message=user_msg,
                 temperature=0.2,
             )
@@ -96,17 +131,25 @@ def filter_papers(state: AgentState) -> AgentState:
                 reason = item.get("relevance_reason", "")
                 scores[aid] = (score, reason)
 
-            # 回填评分
-            for paper in batch:
+            # 回填评分 + 第二层校验
+            for paper in filtered_batch:
                 if paper.arxiv_id in scores:
-                    paper.relevance_score = scores[paper.arxiv_id][0]
-                    paper.relevance_reason = scores[paper.arxiv_id][1]
+                    llm_score = scores[paper.arxiv_id][0]
+                    reason = scores[paper.arxiv_id][1]
+
+                    # 第二层：零高优先级关键词命中 + LLM 给 4+ 分 → 降级到 3
+                    high_hits = _hard_filter_positive(f"{paper.title} {paper.abstract}")
+                    if llm_score >= 4 and high_hits == 0:
+                        llm_score = 3
+                        reason = f"[降级] {reason}（未命中高优先级关键词）"
+
+                    paper.relevance_score = llm_score
+                    paper.relevance_reason = reason
                     scored_papers.append(paper)
 
         except Exception as e:
             logger.error(f"   ❌ 批次筛选失败: {e}")
-            # 这批论文也给个默认低分，但不完全丢弃
-            for paper in batch:
+            for paper in filtered_batch:
                 paper.relevance_score = 1
                 paper.relevance_reason = "LLM 调用异常，默认低分"
                 scored_papers.append(paper)
@@ -118,7 +161,7 @@ def filter_papers(state: AgentState) -> AgentState:
     # 按评分降序排列
     filtered.sort(key=lambda p: p.relevance_score, reverse=True)
 
-    logger.info(f"   ✅ 筛选完成: {len(filtered)}/{total} 篇通过（阈值 ≥{FILTER_MIN_SCORE}）")
+    logger.info(f"   ✅ 筛选完成: {len(filtered)}/{total} 篇通过（阈值 ≥{FILTER_MIN_SCORE}），硬过滤 {negative_filtered_count} 篇")
     for p in filtered[:10]:
         logger.info(f"      [{p.relevance_score}分] {p.title[:80]}...")
         logger.info(f"         理由: {p.relevance_reason}")

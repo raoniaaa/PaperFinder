@@ -93,6 +93,53 @@ class PaperStore:
             )
             return {row[0] for row in cursor.fetchall()}
 
+    def get_by_date(self, published_date: str) -> list[dict]:
+        """按发布日期获取已存入的论文及梗概数据。
+
+        Returns:
+            list[dict] 每篇包含完整字段，可直接用于构建日报和飞书卡片。
+        """
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.execute(
+                """
+                SELECT arxiv_id, title, authors, abstract, published_date,
+                       pdf_url, primary_category, relevance_score,
+                       chinese_title, one_line_contribution, methodology,
+                       experiment_results, geo_insight
+                FROM papers WHERE published_date = ?
+                ORDER BY relevance_score DESC
+                """,
+                (published_date,),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return []
+
+            results = []
+            from src.models.paper import Paper, DigestedPaper
+
+            for row in rows:
+                p = Paper(
+                    arxiv_id=row[0],
+                    title=row[1],
+                    authors=row[2].split(", ") if row[2] else [],
+                    abstract=row[3] or "",
+                    published_date=row[4] or "",
+                    pdf_url=row[5] or "",
+                    primary_category=row[6] or "",
+                )
+                p.relevance_score = row[7] or 0
+                dp = DigestedPaper(
+                    paper=p,
+                    chinese_title=row[8] or "",
+                    one_line_contribution=row[9] or "",
+                    methodology=row[10] or "",
+                    experiment_results=row[11] or "",
+                    geo_insight=row[12] or "",
+                )
+                results.append(dp)
+            return results
+
 
 # 全局单例
 paper_store = PaperStore()

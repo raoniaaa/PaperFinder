@@ -8,28 +8,27 @@ from src.config import ARXIV_CATEGORIES, ARXIV_MAX_RESULTS_PER_CATEGORY, ARXIV_D
 from src.utils.logger import logger
 
 
-def _build_query(days_back: int) -> str:
-    """构建 arXiv 查询：按分类号 + 日期范围。"""
-    # 日期范围
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days_back)
-
+def _build_query(target_date: str) -> str:
+    """构建 arXiv 查询：按分类号 + 指定日期。"""
     # 分类号 OR 拼接
     categories_or = " OR ".join(f"cat:{cat}" for cat in ARXIV_CATEGORIES)
 
-    # 组合查询
-    query = f"({categories_or}) AND submittedDate:[{start_date.strftime('%Y%m%d')} TO {end_date.strftime('%Y%m%d')}]"
+    # 按指定日期搜索（单日范围）
+    dt = datetime.strptime(target_date, "%Y-%m-%d")
+    date_str = dt.strftime("%Y%m%d")
+    query = f"({categories_or}) AND submittedDate:[{date_str} TO {date_str}]"
     return query
 
 
 def fetch_papers(state: AgentState) -> AgentState:
-    """从 arXiv API 抓取最新论文。"""
+    """从 arXiv API 抓取指定日期论文。"""
     logger.info("=" * 60)
     logger.info("📡 Node 1: 开始从 arXiv 抓取论文...")
 
-    date_str = state.get("date", datetime.now().strftime("%Y-%m-%d"))
-    query = _build_query(ARXIV_DAYS_BACK)
+    target_date = state.get("date", datetime.now().strftime("%Y-%m-%d"))
+    query = _build_query(target_date)
 
+    logger.info(f"   目标日期: {target_date}")
     logger.info(f"   查询语句: {query}")
 
     try:
@@ -69,7 +68,7 @@ def fetch_papers(state: AgentState) -> AgentState:
         papers = []
 
     state["raw_papers"] = papers
-    state["date"] = date_str
+    state["date"] = target_date
     state["stats"] = {**state.get("stats", {}), "raw_count": len(papers)}
 
     return state

@@ -51,5 +51,4 @@ def build_graph() -> StateGraph:
     return workflow.compile()
 
 
-# 编译好的 graph 实例
-graph = build_graph()
+
