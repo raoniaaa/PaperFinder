@@ -4,6 +4,7 @@ from langgraph.graph import StateGraph, END
 from src.state import AgentState
 from src.nodes.fetch import fetch_papers
 from src.nodes.filter import filter_papers
+from src.nodes.reflect import reflect_papers
 from src.nodes.digest import digest_papers
 from src.nodes.store import store_papers
 from src.nodes.output import output_result
@@ -24,6 +25,7 @@ def build_graph() -> StateGraph:
     # 添加节点
     workflow.add_node("fetch", fetch_papers)
     workflow.add_node("filter", filter_papers)
+    workflow.add_node("reflect", reflect_papers)
     workflow.add_node("digest", digest_papers)
     workflow.add_node("store", store_papers)
     workflow.add_node("output", output_result)
@@ -33,10 +35,11 @@ def build_graph() -> StateGraph:
 
     # 连接边
     workflow.add_edge("fetch", "filter")
+    workflow.add_edge("filter", "reflect")
 
-    # filter 之后条件分支
+    # reflect 之后条件分支
     workflow.add_conditional_edges(
-        "filter",
+        "reflect",
         should_continue,
         {
             "digest": "digest",

@@ -32,9 +32,11 @@ GEO 定义：研究如何优化内容以在 AI 搜索引擎（如 ChatGPT、Perp
 - 2分：论文涉及传统信息检索但完全不涉及生成式 AI 或 LLM
 - 1分：论文与搜索/信息检索/LLM应用均无关（如通用 NLP、CV、机器人等）
 
+⚠️ 重要：摘要尾部通常包含结论、实验结果或研究发现，请重点关注摘要的后半部分，据此判断论文的实际贡献和 GEO 关联度。不要只看开头的研究背景。
+
 请为每篇论文给出：
 1. relevance_score: 1-5 的整数评分
-2. relevance_reason: 一句话说明理由（中文）
+2. relevance_reason: 一句话说明理由（中文，请结合摘要中的结论/发现来说明）
 
 严格按照以下 JSON 格式输出，不要输出其他内容：
 {{
@@ -49,10 +51,14 @@ def _build_filter_user_message(abstracts_batch: list[tuple[str, str]]) -> str:
     """构造给 LLM 的批处理用户消息。"""
     lines = []
     for arxiv_id, title, abstract in abstracts_batch:
-        # 截断过长摘要
-        abstract_short = abstract[:800] if len(abstract) > 800 else abstract
+        # 保留前200字符 + 尾部1100字符（结论部分），确保 LLM 能看到实验结果和发现
+        if len(abstract) > 1500:
+            abstract_short = abstract[:400] + " ... " + abstract[-1100:]
+        else:
+            abstract_short = abstract
         lines.append(f"---\nID: {arxiv_id}\n标题: {title}\n摘要: {abstract_short}")
     return "\n".join(lines)
+
 
 
 def _hard_filter_negative(text: str) -> bool:
