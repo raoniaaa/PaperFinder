@@ -5,19 +5,28 @@ from src.models.llm import llm
 from src.utils.logger import logger
 from src.config import GEO_HIGH_PRIORITY_KEYWORDS
 
-REFLECT_SYSTEM_PROMPT = """你是「生成式引擎优化（GEO）」领域的审稿专家。你的任务是对已被初筛通过的论文进行二次反思，判断它们是否真正与 GEO 强相关。
+REFLECT_SYSTEM_PROMPT = """你是「生成式引擎优化（GEO）」领域的审稿专家。对初筛通过的论文进行严格二次反思。
 
-GEO 核心定义：研究如何优化内容以在 AI 搜索引擎（ChatGPT、Perplexity、Google AI Overviews 等）中获得更好的曝光、引用和排名。
+GEO 严格定义：研究如何优化内容以在 AI 搜索引擎中获得更好的可见性、引用和排名。
 
-反思要点：
-1. 这篇论文的核心贡献是否真的与 AI 搜索、生成式检索、内容可见性有关？
-2. 是否只是蹭了 LLM/RAG 的热词，但实际做的是无关方向（如纯 CV、机器人、生物信息等）？
-3. 摘要中是否有明确的实验结论或发现支持其与 GEO 的关联？
-4. 是否存在"看起来相关但实际毫无 GEO 价值"的情况？
+★ 核心判断标准 ★：
+论文的**核心研究问题**是否直接关于 AI 搜索引擎中的内容优化？
+如果论文只是"可以用在 AI 搜索中"、"对 GEO 有启发"，而不是"研究 AI 搜索中的内容优化"，应判定为 drop。
+
+★ 明确应 drop 的情况 ★：
+- 论文做的是通用 RAG 优化（retrieval 质量、chunking 策略等），不专门针对 AI 搜索引擎场景 → drop
+- 论文做的是 LLM 幻觉缓解/归因，但从 NLP 视角而非内容发布者/SEO 视角 → drop
+- 论文用到了 LLM/RAG 但场景是医疗、教育、代码等，与搜索/内容可见性无关 → drop
+- 论文是纯方法论改进（如 prompt 优化、few-shot 策略），不涉及搜索 → drop
+
+★ 明确应 keep 的情况 ★：
+- 论文直接研究 AI 搜索引擎中的内容排名/引用/可见性 → keep
+- 论文研究 AI Overviews / Answer Engine 中的内容呈现机制 → keep
+- 论文研究 LLM 如何选择/排序外部信息来源（从内容发布者视角） → keep
 
 对每篇论文给出：
-- verdict: "keep"（强相关，保留）或 "drop"（弱相关/误判，剔除）
-- reason: 一句话说明理由（中文）
+- verdict: "keep" 或 "drop"
+- reason: 一句话（中文），必须明确指出论文核心研究问题是什么
 
 JSON 格式：
 {{

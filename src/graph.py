@@ -11,10 +11,10 @@ from src.nodes.output import output_result
 
 
 def should_continue(state: AgentState) -> str:
-    """条件路由：如果筛选后无有效论文则直接结束。"""
+    """条件路由：filter 之后，如果没有论文则直接跳到 output 发空报告。"""
     if len(state["filtered_papers"]) == 0:
         return "end"
-    return "digest"
+    return "reflect"
 
 
 def build_graph() -> StateGraph:
@@ -35,18 +35,15 @@ def build_graph() -> StateGraph:
 
     # 连接边
     workflow.add_edge("fetch", "filter")
-    workflow.add_edge("filter", "reflect")
 
-    # reflect 之后条件分支
+    # filter 之后条件分支：无论文则直接跳到输出，有论文进 reflect
     workflow.add_conditional_edges(
-        "reflect",
+        "filter",
         should_continue,
-        {
-            "digest": "digest",
-            "end": END,
-        },
+        {"reflect": "reflect", "end": "output"},
     )
 
+    workflow.add_edge("reflect", "digest")
     workflow.add_edge("digest", "store")
     workflow.add_edge("store", "output")
     workflow.add_edge("output", END)

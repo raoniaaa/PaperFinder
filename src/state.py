@@ -1,6 +1,6 @@
 """LangGraph 状态定义。"""
 
-from typing import TypedDict
+from typing import TypedDict, NotRequired
 from src.models.paper import Paper, DigestedPaper
 
 
@@ -27,3 +27,11 @@ class AgentState(TypedDict):
 
     # 反思标记：是否已完成反思（最多一次）
     has_reflected: bool
+
+    # ─── 飞书进度推送 ───
+    # 接收消息的飞书用户 open_id（由 webhook/ws 注入，定时调度时为空不推送进度）
+    feishu_chat_id: str
+    # 接收消息的类型: "open_id"（私聊）或 "chat_id"（群聊）
+    feishu_chat_type: str
+    # 已发送的进度卡片 message_id（用于更新同一张卡片）
+    feishu_card_message_id: str

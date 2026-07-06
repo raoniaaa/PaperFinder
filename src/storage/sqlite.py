@@ -6,7 +6,7 @@ from src.config import SQLITE_DB_PATH, DATA_DIR
 
 
 class PaperStore:
-    """SQLite 存储 —— 已读论文去重与记录。"""
+    """SQLite 存储 —— 已读论文去重与记录，含断点恢复。"""
 
     def __init__(self, db_path: Path = SQLITE_DB_PATH):
         self.db_path = Path(db_path)
@@ -14,7 +14,6 @@ class PaperStore:
         self._init_db()
 
     def _init_db(self):
-        """初始化数据库表。"""
         with sqlite3.connect(str(self.db_path)) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS papers (
@@ -32,6 +31,18 @@ class PaperStore:
                     experiment_results TEXT,
                     geo_insight TEXT,
                     created_at TEXT DEFAULT (datetime('now', 'localtime'))
+                )
+            """)
+            # 断点恢复表：保存 filter/digest 中间结果
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    date TEXT PRIMARY KEY,
+                    phase TEXT NOT NULL DEFAULT 'filter',
+                    batch_index INTEGER NOT NULL DEFAULT 0,
+                    scored_data TEXT,
+                    digested_data TEXT,
+                    card_message_id TEXT,
+                    updated_at TEXT DEFAULT (datetime('now', 'localtime'))
                 )
             """)
             conn.commit()
@@ -92,6 +103,49 @@ class PaperStore:
                 (f"-{days} days",),
             )
             return {row[0] for row in cursor.fetchall()}
+
+    def save_checkpoint(self, date: str, phase: str, batch_index: int,
+                         scored_data: dict | None = None,
+                         digested_data: dict | None = None,
+                         card_message_id: str = ""):
+        """保存断点：当前完成了哪个批次、哪些论文已评分/已梗概。"""
+        import json
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO checkpoints
+                   (date, phase, batch_index, scored_data, digested_data, card_message_id, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))""",
+                (date, phase, batch_index,
+                 json.dumps(scored_data, ensure_ascii=False) if scored_data else "",
+                 json.dumps(digested_data, ensure_ascii=False) if digested_data else "",
+                 card_message_id),
+            )
+            conn.commit()
+
+    def load_checkpoint(self, date: str) -> dict:
+        """加载断点。返回 {phase, batch_index, scored_data, digested_data, card_message_id}。"""
+        import json
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.execute(
+                "SELECT phase, batch_index, scored_data, digested_data, card_message_id "
+                "FROM checkpoints WHERE date = ?",
+                (date,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {}
+            return {
+                "phase": row[0],
+                "batch_index": row[1] or 0,
+                "scored_data": json.loads(row[2]) if row[2] else None,
+                "digested_data": json.loads(row[3]) if row[3] else None,
+                "card_message_id": row[4] or "",
+            }
+
+    def delete_checkpoint(self, date: str):
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute("DELETE FROM checkpoints WHERE date = ?", (date,))
+            conn.commit()
 
     def get_by_date(self, published_date: str) -> list[dict]:
         """按发布日期获取已存入的论文及梗概数据。

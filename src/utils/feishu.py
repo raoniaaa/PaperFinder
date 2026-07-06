@@ -35,27 +35,22 @@ def _get_tenant_access_token() -> str:
     return _cached_token
 
 
-def send_card_message(card: dict, receive_id: str | None = None, receive_id_type: str | None = None) -> bool:
+def send_card_message(card: dict, receive_id: str = "", receive_id_type: str = "") -> tuple[bool, str]:
     """发送飞书 Interactive Card 消息。
 
-    Args:
-        card: 飞书卡片 JSON（msg_type=interactive）
-        receive_id: 目标 ID（open_id 或 chat_id），默认使用 .env 配置
-        receive_id_type: open_id（私聊）或 chat_id（群聊），默认使用 .env 配置
-
     Returns:
-        是否发送成功
+        (成功, message_id) — message_id 可用于后续 update_card_message
     """
     target = receive_id or FEISHU_RECEIVE_ID
     id_type = receive_id_type or FEISHU_RECEIVE_ID_TYPE
 
     if not target:
-        logger.error("❌ 飞书消息发送失败: 未配置 FEISHU_RECEIVE_ID")
-        return False
+        logger.error("❌ 飞书卡片发送失败: 未配置 FEISHU_RECEIVE_ID，且未传入 receive_id")
+        return False, ""
 
     if not FEISHU_APP_ID or not FEISHU_APP_SECRET:
         logger.error("❌ 飞书消息发送失败: 未配置 FEISHU_APP_ID / FEISHU_APP_SECRET")
-        return False
+        return False, ""
 
     try:
         token = _get_tenant_access_token()
@@ -75,13 +70,49 @@ def send_card_message(card: dict, receive_id: str | None = None, receive_id_type
         resp.raise_for_status()
         result = resp.json()
         if result.get("code") == 0:
-            logger.info(f"✅ 飞书日报已发送 (receive_id_type={id_type})")
+            message_id = result.get("data", {}).get("message_id", "")
+            logger.info(f"✅ 飞书卡片已发送 (message_id={message_id})")
+            return True, message_id
+        else:
+            logger.error(f"❌ 飞书卡片发送失败: {result}")
+            return False, ""
+    except Exception as e:
+        logger.error(f"❌ 飞书卡片发送异常: {e}")
+        return False, ""
+
+
+def update_card_message(message_id: str, card: dict) -> bool:
+    """更新已发送的飞书卡片（渐进式追加内容）。
+
+    飞书文档: PATCH /im/v1/messages/:message_id
+    """
+    if not message_id or not FEISHU_APP_ID:
+        return False
+
+    try:
+        token = _get_tenant_access_token()
+        resp = requests.patch(
+            f"{FEISHU_MESSAGE_URL}/{message_id}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "msg_type": "interactive",
+                "content": json.dumps(card),
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("code") == 0:
+            logger.info(f"🔄 飞书卡片已更新 (message_id={message_id})")
             return True
         else:
-            logger.error(f"❌ 飞书消息发送失败: {result}")
+            logger.warning(f"⚠️ 飞书卡片更新失败: {result}")
             return False
     except Exception as e:
-        logger.error(f"❌ 飞书消息发送异常: {e}")
+        logger.warning(f"⚠️ 飞书卡片更新异常: {e}")
         return False
 
 
@@ -109,6 +140,54 @@ def list_chats(page_size: int = 20) -> list[dict]:
     except Exception as e:
         logger.error(f"获取群列表异常: {e}")
         return []
+
+
+def send_text_message(text: str, receive_id: str = "", receive_id_type: str = "") -> bool:
+    """发送纯文本消息到飞书（用于进度反馈）。
+
+    Args:
+        text: 要发送的文本内容
+        receive_id: 目标 ID（open_id 或 chat_id），为空时使用 .env 配置
+        receive_id_type: open_id（私聊）或 chat_id（群聊），为空时使用 .env 配置
+
+    Returns:
+        是否发送成功
+    """
+    target = receive_id or FEISHU_RECEIVE_ID
+    id_type = receive_id_type or FEISHU_RECEIVE_ID_TYPE
+
+    if not target:
+        return False
+
+    if not FEISHU_APP_ID or not FEISHU_APP_SECRET:
+        return False
+
+    try:
+        token = _get_tenant_access_token()
+        resp = requests.post(
+            f"{FEISHU_MESSAGE_URL}?receive_id_type={id_type}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "receive_id": target,
+                "msg_type": "text",
+                "content": json.dumps({"text": text}),
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("code") == 0:
+            logger.info(f"📤 进度消息已发送: {text[:50]}...")
+            return True
+        else:
+            logger.warning(f"⚠️ 进度消息发送失败: {result}")
+            return False
+    except Exception as e:
+        logger.warning(f"⚠️ 进度消息发送异常: {e}")
+        return False
 
 
 def list_users(page_size: int = 50) -> list[dict]:

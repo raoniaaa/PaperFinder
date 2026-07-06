@@ -8,6 +8,7 @@
 """
 
 import argparse
+import os
 import sys
 import time
 from datetime import datetime, timedelta
@@ -19,52 +20,71 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.config import SCHEDULE_TIME
 from src.state import AgentState
 from src.graph import build_graph
-from src.nodes.fetch import fetch_papers
+from src.nodes.fetch import _build_query
 from src.storage.chroma import chroma_store
 from src.storage.sqlite import paper_store
 from src.utils.logger import logger
-from src.utils.feishu import list_chats, list_users, send_card_message
+from src.utils.feishu import list_chats, list_users, send_card_message, send_text_message
 from src.nodes.output import _build_feishu_card_data, _render_daily_report
 
+# 回退查找配置
+MAX_LOOKBACK_DAYS = 14       # 最多往回找多少天
+QUICK_CHECK_TIMEOUT = 5      # 回退时每天查询超时（秒），不重试
 
-def _find_latest_day_with_papers(max_lookback: int = 7) -> str:
-    """回退查找最近一个有论文发布的日期（跳过周末/节假日）。
 
-    从昨天开始往回找，最多回退 max_lookback 天。
+def _find_latest_day_with_papers() -> str:
+    """快速回退查找最近一个有论文的日期。
+
+    用 arxiv 客户端但禁内置重试 + 短超时，单日最多 QUICK_CHECK_TIMEOUT 秒。
+    最多回退 MAX_LOOKBACK_DAYS 天，找不到就用昨天。
     """
+    import arxiv
+
     today = datetime.now()
-    for offset in range(1, max_lookback + 1):
+    # 跳过周末（arXiv 通常不在周末发布）
+    client = arxiv.Client(page_size=5, delay_seconds=0, num_retries=0)
+
+    for offset in range(1, MAX_LOOKBACK_DAYS + 1):
         candidate = today - timedelta(days=offset)
         candidate_str = candidate.strftime("%Y-%m-%d")
-        logger.info(f"🔍 尝试日期: {candidate_str} ...")
 
-        test_state: AgentState = {
-            "date": candidate_str,
-            "raw_papers": [],
-            "filtered_papers": [],
-            "digested_papers": [],
-            "output_message": "",
-            "stats": {},
-        }
-        result = fetch_papers(test_state)
-        count = len(result["raw_papers"])
-        if count > 0:
-            logger.info(f"✅ 找到 {count} 篇论文，日期: {candidate_str}")
-            return candidate_str
-        else:
-            logger.info(f"   无论文，继续回退...")
+        # 跳过周末
+        weekday = candidate.weekday()  # 0=Mon ... 6=Sun
+        if weekday >= 5:
+            logger.info(f"🔍 跳过周末 {candidate_str} ({['一','二','三','四','五','六','日'][weekday]})")
+            continue
 
-    # 实在找不到就用昨天的日期
+        logger.info(f"🔍 快速探测: {candidate_str} ...")
+        query = _build_query(candidate_str)
+        try:
+            # 最多只查 3 篇，判断有没有就行
+            search = arxiv.Search(query=query, max_results=3, sort_by=arxiv.SortCriterion.SubmittedDate)
+            results = list(client.results(search))
+            if results:
+                logger.info(f"   ✅ 找到论文，日期: {candidate_str}")
+                return candidate_str
+            else:
+                logger.info(f"   无论文")
+        except Exception:
+            logger.info(f"   查询失败，快速跳过")
+            continue
+
     fallback = (today - timedelta(days=1)).strftime("%Y-%m-%d")
-    logger.warning(f"⚠️ 回退 {max_lookback} 天均无论文，使用 {fallback}")
+    logger.warning(f"⚠️ 回退 {MAX_LOOKBACK_DAYS} 天均无结果，使用 {fallback}")
     return fallback
 
 
-def run_pipeline(target_date: str | None = None) -> dict:
+def run_pipeline(
+    target_date: str | None = None,
+    feishu_chat_id: str = "",
+    feishu_chat_type: str = "",
+) -> dict:
     """执行一次完整的论文抓取→筛选→梗概→存储→输出流水线。
 
     Args:
         target_date: 目标日期 YYYY-MM-DD，为 None 时自动找最近有论文的一天。
+        feishu_chat_id: 飞书用户 open_id 或群 chat_id，用于进度推送。
+        feishu_chat_type: "open_id"（私聊）或 "chat_id"（群聊）。
     """
     if target_date is None:
         target_date = _find_latest_day_with_papers()
@@ -73,7 +93,7 @@ def run_pipeline(target_date: str | None = None) -> dict:
     logger.info(f"   目标日期: {target_date}")
     logger.info(f"   当前时间: {datetime.now().isoformat()}")
 
-    # ── 快捷路径：如果该日期已有缓存数据，直接复用，不再抓取和调用 LLM ──
+    # ── 快捷路径：如果该日期已有缓存数据，直接复用 ──
     cached = paper_store.get_by_date(target_date)
     if cached:
         logger.info(f"⏭️ {target_date} 已有 {len(cached)} 篇缓存数据，跳过抓取和筛选")
@@ -90,11 +110,17 @@ def run_pipeline(target_date: str | None = None) -> dict:
                 "chroma_total": chroma_store.count(),
                 "from_cache": True,
             },
+            "has_reflected": True,
+            "feishu_chat_id": feishu_chat_id,
+            "feishu_chat_type": feishu_chat_type,
         }
         report = _render_daily_report(state)
-        print(report)
+        try:
+            print(report)
+        except UnicodeEncodeError:
+            print(report.encode("utf-8", errors="replace").decode("utf-8", errors="replace"))
         feishu_card = _build_feishu_card_data(state)
-        send_card_message(feishu_card)
+        send_card_message(feishu_card, receive_id=feishu_chat_id, receive_id_type=feishu_chat_type)
         return state
 
     initial_state: AgentState = {
@@ -104,6 +130,9 @@ def run_pipeline(target_date: str | None = None) -> dict:
         "digested_papers": [],
         "output_message": "",
         "stats": {},
+        "has_reflected": False,
+        "feishu_chat_id": feishu_chat_id,
+        "feishu_chat_type": feishu_chat_type,
     }
 
     try:
@@ -113,6 +142,8 @@ def run_pipeline(target_date: str | None = None) -> dict:
         return final_state
     except Exception as e:
         logger.error(f"❌ 流水线执行失败: {e}", exc_info=True)
+        if feishu_chat_id:
+            send_text_message(f"❌ 流水线执行失败: {e}", receive_id=feishu_chat_id, receive_id_type=feishu_chat_type)
         raise
 
 
@@ -134,14 +165,15 @@ def run_schedule():
 
     schedule.every().day.at(schedule_time).do(scheduled_job)
 
-    # 首次运行时可选择立即执行一次
-    logger.info("💡 首次启动，立即执行一次测试...")
-    scheduled_job()
+    first_run = os.getenv("SCHEDULE_RUN_ON_START", "false").lower() == "true"
+    if first_run:
+        logger.info("💡 首次启动，立即执行一次测试...")
+        scheduled_job()
 
     try:
         while True:
             schedule.run_pending()
-            time.sleep(60)  # 每分钟检查一次
+            time.sleep(60)
     except KeyboardInterrupt:
         logger.info("👋 调度器已停止")
 
@@ -169,28 +201,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="GEO 论文追踪智能体 (Generative Engine Optimization)",
     )
-    parser.add_argument(
-        "--run", action="store_true", help="手动触发一次完整流水线"
-    )
-    parser.add_argument(
-        "--date", type=str, default=None, metavar="YYYY-MM-DD",
-        help="指定抓取日期（默认自动找最近有论文的一天）",
-    )
-    parser.add_argument(
-        "--schedule", action="store_true", help="启动定时调度器"
-    )
-    parser.add_argument(
-        "--search", type=str, default=None, help="搜索向量知识库"
-    )
-    parser.add_argument(
-        "--top-k", type=int, default=5, help="搜索结果数量（默认5）"
-    )
-    parser.add_argument(
-        "--list-chats", action="store_true", help="查看飞书可用群聊"
-    )
-    parser.add_argument(
-        "--list-users", action="store_true", help="查看飞书用户（获取 open_id 用于私聊）"
-    )
+    parser.add_argument("--run", action="store_true", help="手动触发一次完整流水线")
+    parser.add_argument("--date", type=str, default=None, metavar="YYYY-MM-DD",
+                        help="指定抓取日期（默认自动找最近有论文的一天）")
+    parser.add_argument("--schedule", action="store_true", help="启动定时调度器")
+    parser.add_argument("--search", type=str, default=None, help="搜索向量知识库")
+    parser.add_argument("--top-k", type=int, default=5, help="搜索结果数量（默认5）")
+    parser.add_argument("--list-chats", action="store_true", help="查看飞书可用群聊")
+    parser.add_argument("--list-users", action="store_true", help="查看飞书用户（获取 open_id 用于私聊）")
 
     args = parser.parse_args()
 

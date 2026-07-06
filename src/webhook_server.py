@@ -21,85 +21,118 @@ app = Flask(__name__)
 
 INTENT_SYSTEM_PROMPT = """你是一个意图识别助手。根据用户消息判断意图，返回 JSON。
 
+当前日期: {today}
+
 意图类型：
 - "push": 用户想要推送/获取论文日报
 - "search": 用户想要搜索/查找论文
 - "help": 用户询问功能或请求帮助
 - "unknown": 无法识别
 
-时间偏移（仅 push 意图需要）：
-- "today": 今日/今天
-- "yesterday": 昨天/昨日
-- "latest": 最近/最新（未明确指定日期时）
-- "none": 非推送意图
+日期计算（仅 push 意图需要。根据当前日期计算出用户想要的日期，返回 "YYYY-MM-DD" 格式）：
+- "今天"、"今日" → {today}
+- "昨天"、"昨日" → {yesterday}
+- "最近"、"最新"（未指定日期）→ 返回空字符串 ""
+- "前天" → {day_before_yesterday}
+- "上周一/二/三/四/五/六/日" → 推算出对应的日期
+- "这个周一/二/..."、"本周一/二/..." → 推算出对应的日期
+- "X月X号" / "X月X日" → 对应日期（年份为当前年份）
+- "X月X日之前的论文"、"X月X日有什么论文" → push（不是搜索！用论文日报回答）
+- "X月X日有哪些论文" → push
+- "7月1日呢"、"7月2号呢" → push
+- 搜索请求无需日期 → "none"
 
-分析规则：
-- "看看今天有什么"、"推送今天"、"今日论文"、"今天日报"、"今天有什么论文" → push + today
-- "昨天"、"昨天的"、"推送昨天" → push + yesterday
-- "推送"、"推荐论文"、"论文日报"、"来一份"、"最近有什么"、"有什么新论文" → push + latest
-- "搜索xxx"、"找一下"、"有没有xxx"、"查找" → search
-- "你能做什么"、"怎么用"、"功能"、"帮助" → help
-- 闲聊或其他 → unknown
+★ 核心判断规则 ★：
+- 只要用户提到具体日期（X月X日、X月X号）并问论文 → push
+- 只有明确说"搜索XXX"、"找一下XXX关键词"、"有没有关于XXX的论文" → search
+- "X月X日的论文"/"X月X日有什么"/"X月X日有哪些" → push，不是 search！
+- "X月X日之前的论文" → push
+
+搜索关键词（仅 search 意图需要）：
+- 从用户消息中提取搜索关键词
 
 返回格式：
-{"intent": "push|search|help|unknown", "time_offset": "today|yesterday|latest|none", "search_query": "关键词或空字符串"}"""
+{{"intent": "push|search|help|unknown", "date": "YYYY-MM-DD 或 空字符串 或 none", "search_query": "关键词或空字符串"}}"""
 
 
 def _classify_intent(text: str) -> dict:
-    """用 LLM 识别用户意图。"""
+    """用 LLM 识别用户意图，动态注入当前日期以正确解析相对日期。"""
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    day_before = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+
+    prompt = INTENT_SYSTEM_PROMPT.format(
+        today=today,
+        yesterday=yesterday,
+        day_before_yesterday=day_before,
+    )
+
     try:
         result = llm.chat_json(
-            system_prompt=INTENT_SYSTEM_PROMPT,
+            system_prompt=prompt,
             user_message=text,
             temperature=0.1,
             max_tokens=128,
         )
+        if not isinstance(result, dict):
+            logger.warning(f"⚠️ LLM 返回非 dict 类型: {type(result).__name__}: {result}")
+            return _classify_fallback(text)
         logger.info(f"🧠 意图识别: '{text}' → {result}")
         return result
     except Exception as e:
         logger.error(f"意图识别失败，回退到关键词匹配: {e}")
+        logger.error(f"   异常详情: {type(e).__name__}: {e}")
         return _classify_fallback(text)
 
 
 def _classify_fallback(text: str) -> dict:
     """关键词回退（LLM 调用失败时使用）。"""
-    text_lower = text.strip().lower()
-    if any(kw in text for kw in ["搜索", "搜索", "查找", "找", "有没有"]):
-        query = re.sub(r"^(搜索|查找|找一下|有没有)\s*", "", text)
-        return {"intent": "search", "time_offset": "none", "search_query": query}
+    # 只在句首或明确前缀时才算搜索
+    if re.match(r"^(搜索|查找|找一下|找找)\s*", text):
+        query = re.sub(r"^(搜索|查找|找一下|找找)\s*", "", text)
+        return {"intent": "search", "date": "none", "search_query": query}
     if any(kw in text for kw in ["帮助", "功能", "能做什么", "怎么用"]):
-        return {"intent": "help", "time_offset": "none", "search_query": ""}
-    if any(kw in text for kw in ["推送", "论文", "日报", "看看", "有什么", "来一份"]):
+        return {"intent": "help", "date": "none", "search_query": ""}
+    # 论文/日报/推送 相关 → push
+    if any(kw in text for kw in ["推送", "论文", "日报", "看看", "有什么", "来一份", "之前", "之前"]):
         if any(kw in text for kw in ["昨天", "昨天", "昨日"]):
-            return {"intent": "push", "time_offset": "yesterday", "search_query": ""}
+            return {"intent": "push", "date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"), "search_query": ""}
         if any(kw in text for kw in ["今天", "今天", "今日"]):
-            return {"intent": "push", "time_offset": "today", "search_query": ""}
-        return {"intent": "push", "time_offset": "latest", "search_query": ""}
-    return {"intent": "unknown", "time_offset": "none", "search_query": ""}
+            return {"intent": "push", "date": datetime.now().strftime("%Y-%m-%d"), "search_query": ""}
+        return {"intent": "push", "date": "", "search_query": ""}
+    return {"intent": "unknown", "date": "none", "search_query": ""}
 
 
 # ─── 命令处理 ───
 
-def _handle_command(text: str, sender_open_id: str) -> str:
-    """解析用户消息，执行对应的操作，返回回复文本。"""
+def _handle_command(text: str, target_id: str, target_type: str) -> str:
+    """解析用户消息，执行对应的操作，返回回复文本。
+
+    Args:
+        text: 用户消息文本
+        target_id: 飞书目标 ID（群聊为 chat_id，私聊为 open_id）
+        target_type: "chat_id" 或 "open_id"
+    """
     intent = _classify_intent(text)
+    # 防止 LLM 返回残缺 JSON 导致 KeyError
+    intent.setdefault("intent", "unknown")
+    intent.setdefault("date", "none")
+    intent.setdefault("search_query", "")
 
     # 推送论文
     if intent["intent"] == "push":
-        offset = intent.get("time_offset", "latest")
-        if offset == "today":
-            target = datetime.now().strftime("%Y-%m-%d")
-            label = f"今日论文日报（{target}）"
-        elif offset == "yesterday":
-            target = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-            label = f"昨天论文日报（{target}）"
+        raw_date = intent.get("date", "").strip()
+        if raw_date and raw_date != "none":
+            target = raw_date
+            label = f"论文日报（{target}）"
         else:
             target = None
             label = "最近论文日报"
 
-        logger.info(f"📨 推送请求: {label}")
+        logger.info(f"📨 推送请求: {label} → {target_type}={target_id}")
         try:
-            run_pipeline(target_date=target)
+            run_pipeline(target_date=target, feishu_chat_id=target_id, feishu_chat_type=target_type)
             return f"✅ {label}已推送，请查收"
         except Exception as e:
             logger.error(f"推送失败: {e}")
@@ -185,28 +218,34 @@ def feishu_webhook():
                 text = content_str
 
             sender_id = event.get("sender", {}).get("sender_id", {}).get("open_id", "")
+            chat_id = event.get("message", {}).get("chat_id", "")
 
-            logger.info(f"📨 收到消息: '{text}' from {sender_id}")
+            # 判断消息来源
+            is_group = chat_id and chat_id != sender_id
+            target_id = chat_id if is_group else sender_id
+            target_type = "chat_id" if is_group else "open_id"
 
-            # 处理命令并回复（这里简化：直接通过飞书消息 API 回复）
-            reply = _handle_command(text, sender_id)
+            logger.info(f"📨 收到消息: '{text}' from {sender_id} (chat={chat_id}, {'群聊' if is_group else '私聊'})")
 
-            # 发送回复消息（需要额外请求飞书消息 API）
-            _send_text_reply(sender_id, reply, message_id)
+            # 处理命令并回复
+            reply = _handle_command(text, target_id, target_type)
+
+            # 发送回复消息
+            _send_text_reply(target_id, reply, message_id, target_type)
 
     return jsonify({}), 200
 
 
-def _send_text_reply(open_id: str, text: str, root_id: str = "") -> bool:
-    """发送文本回复消息给指定用户。"""
+def _send_text_reply(target_id: str, text: str, root_id: str = "", target_type: str = "open_id") -> bool:
+    """发送文本回复消息（群聊回复到群，私聊回复到人）。"""
     from src.utils.feishu import _get_tenant_access_token
     import requests
 
     try:
         token = _get_tenant_access_token()
-        url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+        url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={target_type}"
         payload = {
-            "receive_id": open_id,
+            "receive_id": target_id,
             "msg_type": "text",
             "content": json.dumps({"text": text}),
         }
@@ -218,7 +257,7 @@ def _send_text_reply(open_id: str, text: str, root_id: str = "") -> bool:
         )
         result = resp.json()
         if result.get("code") == 0:
-            logger.info(f"✅ 已回复消息到 {open_id}")
+            logger.info(f"✅ 已回复消息到 {target_type}={target_id}")
             return True
         else:
             logger.error(f"❌ 回复消息失败: {result}")

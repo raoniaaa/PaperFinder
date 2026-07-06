@@ -1,10 +1,11 @@
-"""Node 3: Agent B —— 学术中文梗概生成。"""
+"""Node 3: Agent B —— 学术中文梗概生成（卡片内渐进更新）。"""
 
 from src.state import AgentState
 from src.models.paper import Paper, DigestedPaper
 from src.models.llm import llm
 from src.config import FILTER_TOP_K
 from src.utils.logger import logger
+from src.utils.feishu import update_card_message
 
 DIGEST_SYSTEM_PROMPT = """你是「生成式引擎优化（Generative Engine Optimization, GEO）」领域的中文学术解读专家。
 你的任务是将英文论文转化为结构化的中文梗概，要求准确、简洁、有洞察力。
@@ -25,8 +26,32 @@ DIGEST_SYSTEM_PROMPT = """你是「生成式引擎优化（Generative Engine Opt
 4. 如果论文与 GEO 领域直接相关，在 geo_insight 中明确指出其贡献；如果只是交叉领域，说明间接启发"""
 
 
+def _build_digest_progress_card(date: str, done: int, total: int, lines: list[str]) -> dict:
+    """构建梗概进度卡片。"""
+    elements = [
+        {
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**📝 生成深度梗概 | {date}**\n\n进度：{done}/{total} 篇\n"}
+        },
+        {"tag": "hr"},
+    ]
+    for line in lines:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": line},
+        })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text", "content": f"📝 GEO 论文梗概中 | {date}"},
+        },
+        "elements": elements,
+    }
+
+
 def _digest_single_paper(paper: Paper) -> DigestedPaper | None:
-    """对单篇论文生成中文梗概。"""
     user_msg = f"""请分析以下论文，生成中文梗概：
 
 **标题**: {paper.title}
@@ -40,7 +65,6 @@ def _digest_single_paper(paper: Paper) -> DigestedPaper | None:
             temperature=0.3,
             max_tokens=2048,
         )
-
         return DigestedPaper(
             paper=paper,
             chinese_title=result.get("chinese_title", paper.title),
@@ -49,41 +73,54 @@ def _digest_single_paper(paper: Paper) -> DigestedPaper | None:
             experiment_results=result.get("experiment_results", ""),
             geo_insight=result.get("geo_insight", ""),
         )
-
     except Exception as e:
         logger.error(f"   ❌ 梗概生成失败 [{paper.arxiv_id}]: {e}")
         return None
 
 
 def digest_papers(state: AgentState) -> AgentState:
-    """Agent B: 对筛选后的论文逐一生成中文梗概。"""
+    """Agent B: 对筛选后的论文逐一生成中文梗概（卡片内渐进更新）。"""
     logger.info("=" * 60)
     logger.info("📝 Node 3: Agent B 开始生成中文梗概...")
 
     filtered = state.get("filtered_papers", [])
+    card_msg_id = state.get("feishu_card_message_id", "")
+    date = state.get("date", "")
+
     if not filtered:
         logger.info("   无论文需要处理，跳过")
         state["digested_papers"] = []
         return state
 
-    # 取 TOP_K 篇高分论文做深度梗概
     top_papers = filtered[:FILTER_TOP_K]
-    logger.info(f"   将为 {len(top_papers)} 篇高优先级论文生成深度梗概")
+    total = len(top_papers)
+    logger.info(f"   将为 {total} 篇高优先级论文生成深度梗概")
+
+    progress_lines = []
+    if card_msg_id:
+        update_card_message(card_msg_id,
+                            _build_digest_progress_card(date, 0, total, ["筛选完成，开始生成梗概..."]))
 
     digested = []
     for i, paper in enumerate(top_papers):
-        logger.info(f"   [{i+1}/{len(top_papers)}] 处理: {paper.title[:70]}...")
+        logger.info(f"   [{i+1}/{total}] 处理: {paper.title[:70]}...")
         digested_paper = _digest_single_paper(paper)
         if digested_paper:
             digested.append(digested_paper)
+            progress_lines.append(f"✅ [{i+1}/{total}] {digested_paper.chinese_title}")
             logger.info(f"       ✅ 完成: {digested_paper.chinese_title}")
+        else:
+            progress_lines.append(f"❌ [{i+1}/{total}] 失败: {paper.title[:40]}...")
 
-    logger.info(f"   ✅ 梗概生成完成: {len(digested)}/{len(top_papers)} 篇成功")
+        # 更新卡片
+        if card_msg_id:
+            update_card_message(
+                card_msg_id,
+                _build_digest_progress_card(date, i + 1, total, progress_lines),
+            )
 
+    logger.info(f"   ✅ 梗概生成完成: {len(digested)}/{total} 篇成功")
     state["digested_papers"] = digested
-    state["stats"] = {
-        **state.get("stats", {}),
-        "digested_count": len(digested),
-    }
+    state["stats"] = {**state.get("stats", {}), "digested_count": len(digested)}
 
     return state

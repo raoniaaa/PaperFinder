@@ -1,5 +1,11 @@
 """Chroma 向量存储 —— GEO 知识库语义搜索。"""
 
+import os
+
+# 将 Hugging Face / Sentence Transformers 模型缓存指向 D 盘
+os.environ.setdefault("HF_HOME", "D:\\chroma_embedding_models")
+os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", "D:\\chroma_embedding_models")
+
 import chromadb
 from src.config import CHROMA_PERSIST_DIR
 from src.utils.logger import logger

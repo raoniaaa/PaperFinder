@@ -5,7 +5,7 @@ from src.state import AgentState
 from src.models.paper import DigestedPaper
 from src.config import FILTER_TOP_K
 from src.utils.logger import logger
-from src.utils.feishu import send_card_message
+from src.utils.feishu import send_card_message, send_text_message
 
 
 def _render_daily_report(state: AgentState) -> str:
@@ -113,21 +113,51 @@ def _build_feishu_card_data(state: AgentState) -> dict:
 
 
 def output_result(state: AgentState) -> AgentState:
-    """输出最终日报到终端，并预留飞书卡片数据。"""
+    """输出最终日报：有论文发卡片，无论文发文本说明。"""
     logger.info("=" * 60)
     logger.info("📤 Node 5: 生成输出...")
+
+    feishu_target = state.get("feishu_chat_id", "")
+    feishu_type = state.get("feishu_chat_type", "")
 
     # 生成日报文本
     report = _render_daily_report(state)
     state["output_message"] = report
 
-    # 打印到终端
-    print(report)
-    logger.info(f"   ✅ 日报生成完成，共 {len(state.get('digested_papers', []))} 篇深度梗概")
+    try:
+        print(report)
+    except UnicodeEncodeError:
+        print(report.encode("utf-8", errors="replace").decode("utf-8", errors="replace"))
 
-    # 发送到飞书群
-    feishu_card = _build_feishu_card_data(state)
-    send_card_message(feishu_card)
-    logger.info(f"   📋 飞书卡片数据已准备（{len(feishu_card.get('elements', []))} 个元素）")
+    digested = state.get("digested_papers", [])
+    logger.info(f"   ✅ 日报生成完成，共 {len(digested)} 篇深度梗概")
+
+    if digested:
+        # 有论文 → 先尝试更新进度卡片为日报，失败则发新卡片
+        card_msg_id = state.get("feishu_card_message_id", "")
+        feishu_card = _build_feishu_card_data(state)
+        if card_msg_id:
+            # 把进度卡片原地变身为日报卡片
+            updated = update_card_message(card_msg_id, feishu_card)
+            if updated:
+                logger.info(f"   ✅ 进度卡片已更新为日报 (message_id={card_msg_id})")
+                return state
+        ok, _ = send_card_message(feishu_card, receive_id=feishu_target, receive_id_type=feishu_type)
+        if ok:
+            logger.info(f"   ✅ 飞书日报卡片已发送到 {feishu_type}={feishu_target}")
+        else:
+            logger.warning(f"   ⚠️ 飞书卡片发送失败")
+    else:
+        # 无论文 → 发送一条文本摘要（不发空卡片）
+        date = state.get("date", "")
+        stats = state.get("stats", {})
+        total = stats.get("total_fetched", 0)
+        if total:
+            msg = f"📊 GEO 论文日报 | {date}\n\n📬 抓取 {total} 篇，但经筛选无与 GEO 强相关的论文。\n可尝试换日期或搜索知识库 🔍"
+        else:
+            msg = f"📊 GEO 论文日报 | {date}\n\n⚠️ 该日期 arXiv 无新论文或 API 暂时不可用（arXiv 周末/节假日通常不发布）。\n可尝试换日期或搜索知识库 🔍"
+        if feishu_target:
+            send_text_message(msg, receive_id=feishu_target, receive_id_type=feishu_type)
+            logger.info(f"   ✅ 无结果通知已发送")
 
     return state

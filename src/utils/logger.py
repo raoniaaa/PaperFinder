@@ -15,7 +15,8 @@ def setup_logger(name: str = "geo_agent") -> logging.Logger:
 
     logger.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
 
-    # 控制台输出
+    # 控制台输出（Windows GBK 终端兼容：替换无法编码的字符而非崩溃）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
 

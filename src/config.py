@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 # --- 豆包 / 火山引擎 Ark API ---
 ARK_API_KEY = os.getenv("ARK_API_KEY", "")
 ARK_BASE_URL = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-ARK_MODEL_ID = os.getenv("ARK_MODEL_ID", "doubao-pro-32k")
+ARK_MODEL_ID = os.getenv("ARK_MODEL_ID", "doubao-1-5-pro-32k-250115")
 
 # --- arXiv 抓取配置 ---
 ARXIV_CATEGORIES = [
