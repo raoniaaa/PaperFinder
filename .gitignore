@@ -18,6 +18,7 @@ env/
 
 # Environment
 .env
+DEPLOY.md
 
 # Data (runtime)
 data/
